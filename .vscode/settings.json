@@ -1,0 +1,23 @@
+{
+  "latex-workshop.latex.tools": [
+    {
+      "name": "latexmk (rc)",
+      "command": "latexmk",
+      "args": [
+        "-synctex=1",
+        "-interaction=nonstopmode",
+        "-file-line-error",
+        "%DOC%"
+      ]
+    }
+  ],
+  "latex-workshop.latex.recipes": [
+    {
+      "name": "latexmk (rc)",
+      "tools": [
+        "latexmk (rc)"
+      ]
+    }
+  ],
+  "latex-workshop.latex.recipe.default": "latexmk (rc)"
+}
