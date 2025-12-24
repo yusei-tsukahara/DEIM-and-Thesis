@@ -277,15 +277,15 @@ def prq_learning_boltzmann(env, library_Q,
                            K=2000, Hmax=100,
                            alpha=0.05, gamma=0.95,
                            psi=1.0, nu=0.95,
-                           tau0=0.0, delta_tau=0.05,
+                           tau0=0.05, delta_tau=0.05,
                            seed=0,
                            record_curve=False):
     rng = np.random.default_rng(seed)
     n = len(library_Q)
 
     Q_new = np.zeros((env.n_states, env.n_actions), dtype=float)
-    W = np.zeros(n + 1, dtype=float)   # running avg gain per policy choice
-    U = np.zeros(n + 1, dtype=int)     # counts (not used for selection here)
+    W = np.zeros(n + 1, dtype=float)
+    U = np.zeros(n + 1, dtype=int)
 
     tau = float(tau0)
     total_G = 0.0
@@ -321,9 +321,10 @@ def plpr_run_boltzmann(tasks_goals,
                        K=2000, Hmax=100,
                        alpha=0.05, gamma=0.95,
                        psi=1.0, nu=0.95,
-                       tau0=0.0, delta_tau=0.05,
-                       env_seeds=None,          # length = num_tasks
-                       prq_seeds=None,          # length = num_tasks
+                       tau0=0.05,                # ★固定
+                       delta_tau=0.05,
+                       env_seeds=None,
+                       prq_seeds=None,
                        run_label="",
                        record_task_indices_1based=(3, 5, 11)):
     num_tasks = len(tasks_goals)
@@ -447,8 +448,8 @@ def plot_compare_multi_paper_like(prq_curves_by_label, rl_curves, title, tick_ev
     plt.show()
 
 # ============================================================
-# 10) Main: Boltzmann bandit ONLY + grid search
-#     ★全候補の学習曲線を同時比較
+# 10) Main: Boltzmann bandit ONLY + grid search on delta_tau ONLY
+#     ★ tau0 は 0.05 固定、delta_tau だけ探索
 # ============================================================
 def main():
     DELTA = 0.25
@@ -463,12 +464,12 @@ def main():
     psi = 1.0
     nu = 0.95
 
-    # ★Grid search over Boltzmann schedule parameters
-    #   tau(t) = tau0 + delta_tau * t
-    TAU0_LIST = [0.0, 0.02, 0.05, 0.1]
-    DELTA_TAU_LIST = [0.0, 0.01, 0.02, 0.05]
+    # ★ tau0 固定
+    TAU0_FIXED = 0.05
+    # ★ delta_tau だけグリッド
+    DELTA_TAU_LIST = [0.0, 0.005, 0.01, 0.02, 0.05]
 
-    # Baseline Q-learning exploration (action-side)
+    # Baseline Q-learning exploration
     eps_start = 1.0
     eps_end = 0.05
 
@@ -484,7 +485,7 @@ def main():
     print("\n==============================")
     print(f"Start δ={DELTA} (fixed), RUNS={RUNS}, record tasks={RECORD_TASKS}")
     print("Reward design: goal_reward=+1.0, step_cost=-0.01, wall_penalty=-0.05")
-    print(f"Boltzmann grid: tau0 in {TAU0_LIST}, delta_tau in {DELTA_TAU_LIST}")
+    print(f"Boltzmann grid: tau0 fixed = {TAU0_FIXED}, delta_tau in {DELTA_TAU_LIST}")
     print("==============================")
 
     # ---- Precompute seeds per run to make grid-search fair ----
@@ -500,7 +501,7 @@ def main():
     def baseline_seed(r, t1):
         return 9999 + 100 * r + int(t1)
 
-    # ---- Collect baseline curves (shared across tau grid) ----
+    # ---- Collect baseline curves (shared across delta_tau grid) ----
     rl_curves_all = {t: [] for t in RECORD_TASKS}
     for r in range(RUNS):
         for t1 in RECORD_TASKS:
@@ -515,11 +516,10 @@ def main():
             )
             rl_curves_all[t1].append(curve_rl)
 
-    # ---- Collect PRQ curves for each (tau0, delta_tau) ----
-    grid = [(t0, dt) for t0 in TAU0_LIST for dt in DELTA_TAU_LIST]
-    prq_curves_all = {(t0, dt): {t: [] for t in RECORD_TASKS} for (t0, dt) in grid}
+    # ---- Collect PRQ curves for each delta_tau ----
+    prq_curves_all = {dt: {t: [] for t in RECORD_TASKS} for dt in DELTA_TAU_LIST}
 
-    for (t0, dt) in grid:
+    for dt in DELTA_TAU_LIST:
         for r in range(RUNS):
             _, _, _, _, curves_dict, _goals_dict = plpr_run_boltzmann(
                 tasks_goals_fixed,
@@ -527,7 +527,8 @@ def main():
                 K=K, Hmax=Hmax,
                 alpha=alpha, gamma=gamma,
                 psi=psi, nu=nu,
-                tau0=float(t0), delta_tau=float(dt),
+                tau0=float(TAU0_FIXED),
+                delta_tau=float(dt),
                 env_seeds=run_env_seeds[r],
                 prq_seeds=run_prq_seeds[r],
                 run_label=f"[run {r+1:02d}/{RUNS:02d}]",
@@ -535,19 +536,19 @@ def main():
             )
             for t1 in RECORD_TASKS:
                 if t1 in curves_dict and curves_dict[t1] is not None:
-                    prq_curves_all[(t0, dt)][t1].append(curves_dict[t1])
+                    prq_curves_all[dt][t1].append(curves_dict[t1])
 
-    # ---- Plot: all grid variants vs baseline (Taskごと) ----
+    # ---- Plot: all delta_tau variants vs baseline (Taskごと) ----
     for t1 in RECORD_TASKS:
         if len(rl_curves_all[t1]) == 0:
             print(f"[WARN] no baseline curves for Task {t1}")
             continue
 
         prq_curves_by_label = {}
-        for (t0, dt) in grid:
-            curves = prq_curves_all[(t0, dt)][t1]
+        for dt in DELTA_TAU_LIST:
+            curves = prq_curves_all[dt][t1]
             if len(curves) > 0:
-                prq_curves_by_label[f"PRQ bandit=Boltzmann (tau0={t0}, dTau={dt})"] = curves
+                prq_curves_by_label[f"PRQ Boltz (tau0={TAU0_FIXED}, dTau={dt})"] = curves
 
         if len(prq_curves_by_label) == 0:
             print(f"[WARN] no PRQ curves collected for Task {t1}")
@@ -557,8 +558,8 @@ def main():
         plot_compare_multi_paper_like(
             prq_curves_by_label,
             rl_curves_all[t1],
-            title=f"PRQ(Boltzmann grid) compare + Baseline - Task {t1}/{NUM_TASKS} "
-                  f"goal={goal} (δ={DELTA}, runs={RUNS})",
+            title=f"PRQ(Boltzmann dTau grid; tau0={TAU0_FIXED}) + Baseline - "
+                  f"Task {t1}/{NUM_TASKS} goal={goal} (δ={DELTA}, runs={RUNS})",
             tick_every=200
         )
 

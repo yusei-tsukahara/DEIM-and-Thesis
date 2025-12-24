@@ -83,26 +83,27 @@ for i, g in enumerate(tasks_goals_fixed, start=1):
         raise ValueError(f"Task {i} goal {g} is not a free cell!")
 
 # ============================================================
-# 3) Environment  ★報酬設計：goal_reward + step_cost (+ wall_penalty)
+# 3) Environment  ★報酬設計（論文と同じ想定）：goal=+1、それ以外=0
 # ============================================================
 class MazeEnv:
     """
-    Reward design:
-      - Each step: step_cost (negative)
-      - If action hits wall/out-of-bounds (no movement): add wall_penalty (negative)
-      - If reach goal: reward = goal_reward (override step penalties for that step)
+    Discrete grid environment:
+    - Start: uniform random over free cells excluding goal
+    - Goal: single cell (x,y)
+    - Episode ends: reach goal OR max_steps Hmax
+    - Walls block motion (stay)
+
+    Reward design (paper-like / sparse):
+      - If reach goal: r = 1
+      - Otherwise:     r = 0
+      - No step cost, no wall penalty
     """
-    def __init__(self, maze, goal, gamma=0.95, seed=0,
-                 goal_reward=1.0, step_cost=-0.01, wall_penalty=-0.05):
+    def __init__(self, maze, goal, gamma=0.95, seed=0):
         self.maze = maze
         self.H, self.W = maze.shape
         self.goal = tuple(goal)
         self.gamma = gamma
         self.rng = np.random.default_rng(seed)
-
-        self.goal_reward = float(goal_reward)
-        self.step_cost = float(step_cost)
-        self.wall_penalty = float(wall_penalty)
 
         self.moves = {
             0: (0, -1),  # up
@@ -146,20 +147,14 @@ class MazeEnv:
         dx, dy = self.moves[a]
         nx, ny = x + dx, y + dy
 
-        blocked = False
+        # wall/out-of-bounds => stay (no extra penalty)
         if (not self.in_bounds(nx, ny)) or self.is_wall(nx, ny):
             nx, ny = x, y
-            blocked = True
 
         self.pos = (nx, ny)
         done = (self.pos == self.goal)
-
-        if done:
-            r = self.goal_reward
-        else:
-            r = self.step_cost + (self.wall_penalty if blocked else 0.0)
-
-        return self.state_id(self.pos), float(r), done
+        r = 1.0 if done else 0.0
+        return self.state_id(self.pos), float(r), bool(done)
 
 # ============================================================
 # 4) Action selection helpers
@@ -457,7 +452,6 @@ def plot_compare_multi_paper_like(prq_curves_by_label, rl_curves, title, tick_ev
 
 # ============================================================
 # 10) Main: UCB bandit ONLY + grid search
-#     ★全候補の学習曲線を同時比較
 # ============================================================
 def main():
     DELTA = 0.25
@@ -490,7 +484,7 @@ def main():
 
     print("\n==============================")
     print(f"Start δ={DELTA} (fixed), RUNS={RUNS}, record tasks={RECORD_TASKS}")
-    print("Reward design: goal_reward=+1.0, step_cost=-0.01, wall_penalty=-0.05")
+    print("Reward design (paper-like): reach goal => +1, otherwise 0 (no step cost, no wall penalty)")
     print(f"UCB grid: c in {C_UCB_LIST}")
     print("==============================")
 

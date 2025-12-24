@@ -84,7 +84,7 @@ for i, g in enumerate(tasks_goals_fixed, start=1):
         raise ValueError(f"Task {i} goal {g} is not a free cell!")
 
 # ============================================================
-# 3) Environment  ★報酬設計：goal_reward + step_cost (+ wall_penalty)
+# 3) Environment  ★報酬設計：論文と同じ（ゴール到達で1、それ以外0）
 # ============================================================
 class MazeEnv:
     """
@@ -93,23 +93,16 @@ class MazeEnv:
     - Episode ends: reach goal OR max_steps Hmax
     - Walls block motion (stay)
 
-    Reward design:
-      - Each step: step_cost (negative)
-      - If action hits wall/out-of-bounds (no movement): add wall_penalty (negative)
-      - If reach goal: reward = goal_reward (override step penalties for that step)
+    Paper-like reward:
+      - If reach goal: r = 1
+      - Otherwise:     r = 0
     """
-    def __init__(self, maze, goal, gamma=0.95, seed=0,
-                 goal_reward=1.0, step_cost=-0.01, wall_penalty=-0.05):
+    def __init__(self, maze, goal, gamma=0.95, seed=0):
         self.maze = maze
         self.H, self.W = maze.shape
         self.goal = tuple(goal)
-        self.gamma = gamma
+        self.gamma = float(gamma)
         self.rng = np.random.default_rng(seed)
-
-        # reward parameters
-        self.goal_reward = float(goal_reward)
-        self.step_cost = float(step_cost)
-        self.wall_penalty = float(wall_penalty)
 
         self.moves = {
             0: (0, -1),  # up
@@ -153,20 +146,13 @@ class MazeEnv:
         dx, dy = self.moves[a]
         nx, ny = x + dx, y + dy
 
-        blocked = False
         if (not self.in_bounds(nx, ny)) or self.is_wall(nx, ny):
-            nx, ny = x, y
-            blocked = True
+            nx, ny = x, y  # blocked => stay
 
         self.pos = (nx, ny)
         done = (self.pos == self.goal)
-
-        if done:
-            r = self.goal_reward
-        else:
-            r = self.step_cost + (self.wall_penalty if blocked else 0.0)
-
-        return self.state_id(self.pos), float(r), done
+        r = 1.0 if done else 0.0
+        return self.state_id(self.pos), float(r), bool(done)
 
 # ============================================================
 # 4) Action selection helpers
@@ -512,6 +498,7 @@ def plot_compare_multi_paper_like(prq_curves_by_label, rl_curves, title, tick_ev
 # ============================================================
 # 10) Main
 #   ★ 最高パフォーマンス設定3つ（Boltzmann / ε-bandit / UCB） + Baseline の4曲線だけ比較
+#   ★ 報酬設計は論文と同じ（ゴールで1、それ以外0）
 # ============================================================
 def main():
     DELTA = 0.25
@@ -526,17 +513,17 @@ def main():
     psi = 1.0
     nu = 0.95
 
-    # ====== BEST settings (from your grid-search conclusion) ======
-    # Boltzmann best: tau0=0.0, dTau=0.01
-    TAU0_BEST = 0.0
-    DTAU_BEST = 0.01
+    # ====== BEST settings (from your latest conclusions) ======
+    # Boltzmann best: tau0=0.05, dTau=0.05
+    TAU0_BEST = 0.05
+    DTAU_BEST = 0.05
 
-    # ε-bandit best: epsb=0.1
-    EPS_BANDIT_BEST = 0.1
+    # ε-bandit best (fixed): epsb=0.05
+    EPS_BANDIT_BEST = 0.05
 
-    # UCB best: c=0.3
+    # UCB best (fixed): c=0.3
     C_UCB_BEST = 0.3
-    # ============================================================
+    # =========================================================
 
     # Baseline Q-learning exploration (action-side)
     eps_start = 1.0
@@ -552,15 +539,14 @@ def main():
     )
 
     print("\n==============================")
-    print(f"Compare 4 curves: Boltzmann-best / ε-bandit-best / UCB-best / Baseline")
+    print("Compare 4 curves: Boltzmann-best / ε-bandit-best / UCB-best / Baseline")
+    print(f"Reward (paper): r=1 at goal else 0")
     print(f"δ={DELTA}, RUNS={RUNS}, record tasks={RECORD_TASKS}")
-    print("Reward design: goal_reward=+1.0, step_cost=-0.01, wall_penalty=-0.05")
     print(f"Boltzmann best: tau0={TAU0_BEST}, dTau={DTAU_BEST}")
-    print(f"ε-bandit best: epsb={EPS_BANDIT_BEST}")
-    print(f"UCB best: c={C_UCB_BEST}")
+    print(f"ε-bandit best : epsb={EPS_BANDIT_BEST}")
+    print(f"UCB best      : c={C_UCB_BEST}")
     print("==============================")
 
-    # 3つの最高パフォーマンス + baseline の4曲線だけ集める
     bandit_variants = [
         ("boltzmann",  f"PRQ bandit=Boltzmann (tau0={TAU0_BEST}, dTau={DTAU_BEST})", None),
         ("eps_greedy", f"PRQ bandit=ε-greedy (epsb={EPS_BANDIT_BEST})", None),
@@ -582,23 +568,21 @@ def main():
             seed=2000 + r,
             run_label=f"[seed-only run {r+1:02d}/{RUNS:02d}]",
             record_task_indices_1based=RECORD_TASKS,
-            bandit_mode="boltzmann",       # ここは何でもOK（env_seeds取得が目的）
+            bandit_mode="boltzmann",       # env_seed取得が目的
             eps_bandit=EPS_BANDIT_BEST,
             c_ucb=C_UCB_BEST
         )
 
-        # PRQ（3方式だけ）
+        # PRQ（3方式）
         for mode, label, c in bandit_variants:
-            # modeごとに「その方式のベスト設定」で呼ぶ
             if mode == "boltzmann":
                 tau0_use, dtau_use = TAU0_BEST, DTAU_BEST
                 epsb_use, c_use = EPS_BANDIT_BEST, C_UCB_BEST
             elif mode == "eps_greedy":
-                # tauは使わないので固定でOK（ただし引数は渡す）
-                tau0_use, dtau_use = TAU0_BEST, DTAU_BEST
+                tau0_use, dtau_use = TAU0_BEST, DTAU_BEST  # tauは使わないが引数は渡す
                 epsb_use, c_use = EPS_BANDIT_BEST, C_UCB_BEST
             elif mode == "ucb":
-                tau0_use, dtau_use = TAU0_BEST, DTAU_BEST
+                tau0_use, dtau_use = TAU0_BEST, DTAU_BEST  # tauは使わないが引数は渡す
                 epsb_use, c_use = EPS_BANDIT_BEST, float(c)
             else:
                 raise ValueError("Unexpected mode")
@@ -622,7 +606,7 @@ def main():
                 if t in prq_curves_dict and prq_curves_dict[t] is not None:
                     prq_curves_all[label][t].append(prq_curves_dict[t])
 
-        # Baseline（今まで通り）
+        # Baseline（同じ env_seed で）
         for t in RECORD_TASKS:
             goal = tasks_goals_fixed[t - 1]
             env_seed = env_seeds_dict[t]
