@@ -1,2 +1,49 @@
 \section{関連研究}
-本章では，関連研究について記す．
+転移強化学習では，ソース環境で得た知識をターゲット環境へ
+再利用することで学習効率を改善する試みが広く研究されている．
+なかでも過去に学習した方策を学習中の探索に組み込む「方策再利用」は，
+環境構造が類似する場合に学習初期の性能を押し上げる一方，
+不適切な再利用は負の転移を招くため，再利用の制御が重要となる．
+
+Fern\'andez と Veloso は，
+複数の過去方策を保持した方策ライブラリから，
+ターゲット環境における学習を支援するために
+過去方策を確率的に再利用する枠組みを提案した 
+\cite{Fernandez2006}．
+方策ライブラリ $\mathcal{L}=\{\Pi_1,\Pi_2,\ldots,\Pi_n\}$ 
+と学習中の新方策 $\Pi_{\Omega}$ を候補とし，
+エピソードごとに1つの方策を選択して実行する．
+各方策 $\Pi_i$ には有効性指標 $W_i$（Reuse Gain）を保持し，
+得られたリターンに基づいて更新する．
+文献\cite{Fernandez2006}では，最大の $W$ を持つ方策指標として
+\begin{equation}
+j^\ast = \arg\max_{i=1,\ldots,n} W_i
+\tag{3}
+\end{equation}
+を定義し，候補方策 $\Pi_j$ の選択確率を
+\begin{equation}
+P(\Pi_j)=\frac{\exp(\tau W_j)}{\sum_{p=0}^{n}\exp(\tau W_p)}
+\tag{4}
+\end{equation}
+で与える（$p=0$ は新方策に対応）．
+
+また，同研究では，選択した方策に常に従うのではなく，
+再利用率 $\psi$ により探索を混合する実行戦略（$\pi$-reuse）を導入している．
+具体的には，時刻 $t$ の状態 $s_t$ における行動 $a_t$ を
+\begin{equation}
+a_t =
+\begin{cases}
+\displaystyle \arg\max_{a} Q_{\Pi_j}(s_t,a)
+& (\text{w/ prob. } \psi)\\[3pt]
+\displaystyle \arg\max_{a} Q_{\Pi_{\mathrm{new}}}(s_t,a)
+& (\text{w/ prob. } 1-\psi)
+\end{cases}
+\tag{5}
+\end{equation}
+
+のように決定し，
+過去方策の過信を抑えつつターゲット環境での学習を進める．
+
+以上を踏まえ，本研究はPRQ-Learningの枠組みを保ったまま
+方策ライブラリからの方策選択部を拡張し，
+ボルツマン選択に限定しない比較を行う点に特徴がある．

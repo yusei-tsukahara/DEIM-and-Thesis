@@ -315,7 +315,7 @@ def plpr_run_epsbandit(tasks_goals,
                        env_seeds=None,          # length = num_tasks
                        prq_seeds=None,          # length = num_tasks
                        run_label="",
-                       record_task_indices_1based=(3, 5, 11)):
+                       record_task_indices_1based=(1, 5, 9, 12, 15)):
     num_tasks = len(tasks_goals)
     if env_seeds is None or prq_seeds is None:
         raise ValueError("Please provide env_seeds and prq_seeds for fair grid search.")
@@ -461,7 +461,7 @@ def main():
     eps_end = 0.05
 
     NUM_TASKS = len(tasks_goals_fixed)   # 15
-    RECORD_TASKS = (3, 5, 11)
+    RECORD_TASKS = (1, 5, 9, 12, 15)
 
     plot_goals_on_maze(
         maze, tasks_goals_fixed,

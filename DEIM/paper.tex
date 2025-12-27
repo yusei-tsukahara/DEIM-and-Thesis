@@ -6,10 +6,15 @@
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{bm}
+\usepackage{cite}
 \usepackage{multirow}
 \usepackage{hyperref}
 \usepackage{pxjahyper}
-\usepackage[switch]{lineno}
+%\usepackage[switch]{lineno}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[section]{placeins}
+\usepackage{float}
 
 % 印刷位置調整 %
 % 必要に応じて値を変更してください．
@@ -22,20 +27,20 @@
 \def\BibTeX{{\rmfamily B\kern-.05em{\scshape i\kern-.025em b}\kern-.08em
  T\kern-.1667em\lower.7ex\hbox{E}\kern-.125em X}}
 
-\papernumber{DEIM Forum 2019 XX-Y}
+\papernumber{DEIM Forum 2025 XX-Y}
 
-\jtitle{論文のタイトル}
+\jtitle{方策再利用転移学習におけるバンディット型方策選択の比較評価}
 \authorlist{%
- \authorentry[hanako@design.inf.shizuoka.ac.jp]{塚原 悠生}{Hanako Shizuoka}{ShizuokaUniv}%
- \authorentry[yamamoto@design.inf.shizuoka.ac.jp]{齊藤 史哲}{Yusuke Yamamoto}{ShizuokaUniv}%
+ \authorentry[c5625291@aoyama.jp]{塚原 悠生}{Yusei Tsukahara}{ShizuokaUniv}%
+ \authorentry[saitoh@ise.aoyama.ac.jp]{齊藤 史哲}{Humiaki Saitou}{ShizuokaUniv}%
 }
-\affiliate[ShizuokaUniv]{静岡大学情報学部\hskip1zw
-  〒432--8011 静岡県浜松市中区城北3-5-1}
+\affiliate[ShizuokaUniv]{青山学院大学大学院理工学研究科\hskip1zw
+  〒252--5258 神奈川県相模原市中央区淵野辺本町5-10-1}
  {Faculty of Informatics, Shizuoka University\\
   3--5--1, Johoku, Naka-ku, Hamamatsu, Shizuoka,432--8011, Japan}
 
 \begin{document}
-\linenumbers %このオプションは投稿時には無効にすること
+%\linenumbers %このオプションは投稿時には無効にすること
 \pagestyle{empty}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -59,7 +64,7 @@
 \maketitle
 
 % 0章：LateXの使い方
-\input{../contents/text/latex}
+%\input{../contents/text/latex}
 
 % 1章：はじめに
 \input{../contents/text/introduction}
@@ -92,10 +97,72 @@
 \vspace{2em}
 
 \begin{thebibliography}{99}
-\bibitem{Codd1970}
-  E. F. Codd,
-  ``A Relational Model of Data for Large Shared Data Banks,''
-  Communications of the {ACM} (CACM), Vol. 13, No. 6, pp. 377--387, 1970.
+
+\bibitem[1]{Fernandez2006}
+F. Fern{\'a}ndez and M. Veloso,
+``Probabilistic Policy Reuse in a Reinforcement Learning Agent,''
+in \textit{Proc. of the 5th Int. Joint Conf. on Autonomous Agents and Multiagent Systems (AAMAS)},
+pp.~720--727, 2006.
+
+\bibitem[2]{SuttonBarto1998}
+R. S. Sutton and A. G. Barto,
+\textit{Reinforcement Learning: An Introduction},
+MIT Press, 1998.
+
+\bibitem[3]{WatkinsDayan1992}
+C. J. C. H. Watkins and P. Dayan,
+``Q-learning,''
+\textit{Machine Learning},
+Vol.~8, No.~3--4, pp.~279--292, 1992.
+
+\bibitem[4]{Thrun1995}
+S. Thrun,
+``Is Learning the N-th Thing Any Easier than Learning the First?,''
+in \textit{Advances in Neural Information Processing Systems (NIPS)},
+pp.~640--646, 1995.
+
+\bibitem[5]{TaylorWhitesonStone2007}
+M. E. Taylor, S. Whiteson, and P. Stone,
+``Transfer via Inter-task Mappings in Policy Search Reinforcement Learning,''
+in \textit{Proc. of the Int. Conf. on Autonomous Agents and Multiagent Systems (AAMAS)},
+pp.~37--44, 2007.
+
+\bibitem[6]{TaylorKuhlmannStone2008}
+M. E. Taylor, G. Kuhlmann, and P. Stone,
+``Autonomous Transfer for Reinforcement Learning,''
+in \textit{Proc. of the Int. Conf. on Autonomous Agents and Multiagent Systems (AAMAS)},
+pp.~283--290, 2008.
+
+\bibitem[7]{MaclinShavlik1996}
+S. Maclin and J. W. Shavlik,
+``Creating Advice-Taking Reinforcement Learners,''
+\textit{Machine Learning},
+Vol.~22, No.~1--3, pp.~251--281, 1996.
+
+\bibitem[8]{NicolescuMataric2003}
+M. Nicolescu and M. J. Matari{\'c},
+``Natural Methods for Robot Task Learning: Instructive Demonstrations, Generalization and Practice,''
+in \textit{Proc. of the Int. Conf. on Autonomous Agents and Multiagent Systems (AAMAS)},
+pp.~241--248, 2003.
+
+\bibitem[9]{BartoMahadevan2003}
+A. G. Barto and S. Mahadevan,
+``Recent Advances in Hierarchical Reinforcement Learning,''
+\textit{Discrete Event Dynamic Systems},
+Vol.~13, No.~4, pp.~341--379, 2003.
+
+\bibitem[10]{KonidarisBarto2007}
+G. Konidaris and A. G. Barto,
+``Building Portable Options: Skill Transfer in Reinforcement Learning,''
+in \textit{Proc. of the 20th Int. Joint Conf. on Artificial Intelligence (IJCAI)},
+pp.~895--900, 2007.
+
+\bibitem[11]{Auer2002}
+P. Auer, N. Cesa-Bianchi, and P. Fischer,
+``Finite-time Analysis of the Multiarmed Bandit Problem,''
+\textit{Machine Learning},
+Vol.~47, No.~2--3, pp.~235--256, 2002.
+
 \end{thebibliography}
 
 

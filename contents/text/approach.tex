@@ -1,2 +1,62 @@
-\section{提案内容（このセクション名は内容に応じて変更）}
-本章では，●●を行うためのxxxの方法について述べる．
+\section{提案手法}
+本研究では，方策再利用（Policy Reuse）の枠組みにおける
+「エピソードごとに採用する方策の選択」を多腕バンディット
+として捉え，
+既存研究で用いられるボルツマン選択に加えて 
+$\varepsilon$-greedy および UCB を適用し，
+その性能差を比較する．
+さらに，報酬設計を2種類用意し，
+報酬構造の違いが各手法の優劣に与える影響も検証する．
+
+\subsection{方策再利用の枠組み}
+ソース側で学習した方策の集合（Policy Library）を
+\begin{equation}
+\mathcal{L}=\{\pi_1,\pi_2,\dots,\pi_K\}
+\end{equation}
+とし，ターゲットで学習中の方策を $\pi_{\mathrm{new}}$ とする．
+各エピソード開始時に $\mathcal{L}\cup\{\pi_{\mathrm{new}}\}$ 
+から1つの方策を選択し，
+エピソード中は選択方策を参照して行動を決定する．
+エピソード終了後，得られたリターンに基づき各方策の推定価値
+ $V_i$ を更新し，次エピソードの方策選択に用いる．
+
+また，エピソード内の行動決定は再利用率 $\psi$ により統一し，
+確率 $\psi$ で選択方策の推奨行動を採用し，
+確率 $1-\psi$ で探索行動を採用する．
+これにより，本研究では方策選択アルゴリズムの差に着目した
+比較を行う．
+
+\subsection{方策選択アルゴリズム（3手法）}
+各方策 $\pi_i$ について推定価値 $V_i$ と選択回数 $N_i$ を保持し，
+エピソードごとに以下のいずれかで方策を選択する．
+
+\paragraph{ボルツマン選択（Softmax）}
+\begin{equation}
+P(\pi_i)=\frac{\exp(\tau V_i)}{\sum_{j}\exp(\tau V_j)}
+\end{equation}
+温度 $\tau$ により探索の強さを調整する．
+
+\paragraph{$\varepsilon$-greedy}
+\begin{equation}
+\pi=
+\begin{cases}
+\arg\max_i V_i & (\text{with prob. } 1-\varepsilon)\\
+\text{random choice} & (\text{with prob. } \varepsilon)
+\end{cases}
+\end{equation}
+単純な確率混合により探索と活用を制御する．
+
+\paragraph{UCB}
+\begin{equation}
+\pi=\arg\max_i\left( V_i + c\sqrt{\frac{\log t}{N_i}} \right)
+\end{equation}
+$ t $ はエピソード数，$c$ は探索係数であり，
+未試行（$N_i$ が小さい）方策を優先する．
+
+\subsection{報酬設計（2条件）}
+報酬構造の違いによる影響を調べるため，
+以下の2条件で同一の比較を行う．
+\begin{itemize}
+  \item 報酬設計1：ゴール到達報酬のみ（既存研究に準じた設定）．
+  \item 報酬設計2：報酬設計1に加え，ステップ負報酬と壁衝突ペナルティを導入．
+\end{itemize}

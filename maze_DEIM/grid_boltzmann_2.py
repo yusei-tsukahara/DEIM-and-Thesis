@@ -75,7 +75,6 @@ TASK_GOALS = {
     14: (21, 1),
     15: (21, 5),
 }
-
 tasks_goals_fixed = [TASK_GOALS[i] for i in range(1, 16)]
 
 for i, g in enumerate(tasks_goals_fixed, start=1):
@@ -83,27 +82,26 @@ for i, g in enumerate(tasks_goals_fixed, start=1):
         raise ValueError(f"Task {i} goal {g} is not a free cell!")
 
 # ============================================================
-# 3) Environment  ★報酬設計（論文と同じ想定）：goal=+1、それ以外=0
+# 3) Environment  ★報酬設計：goal_reward + step_cost (+ wall_penalty)
 # ============================================================
 class MazeEnv:
     """
-    Discrete grid environment:
-    - Start: uniform random over free cells excluding goal
-    - Goal: single cell (x,y)
-    - Episode ends: reach goal OR max_steps Hmax
-    - Walls block motion (stay)
-
-    Reward design (paper-like / sparse):
-      - If reach goal: r = 1
-      - Otherwise:     r = 0
-      - No step cost, no wall penalty
+    Reward design:
+      - Each step: step_cost (negative)
+      - If action hits wall/out-of-bounds (no movement): add wall_penalty (negative)
+      - If reach goal: reward = goal_reward (override step penalties for that step)
     """
-    def __init__(self, maze, goal, gamma=0.95, seed=0):
+    def __init__(self, maze, goal, gamma=0.95, seed=0,
+                 goal_reward=1.0, step_cost=-0.01, wall_penalty=-0.05):
         self.maze = maze
         self.H, self.W = maze.shape
         self.goal = tuple(goal)
         self.gamma = gamma
         self.rng = np.random.default_rng(seed)
+
+        self.goal_reward = float(goal_reward)
+        self.step_cost = float(step_cost)
+        self.wall_penalty = float(wall_penalty)
 
         self.moves = {
             0: (0, -1),  # up
@@ -147,14 +145,20 @@ class MazeEnv:
         dx, dy = self.moves[a]
         nx, ny = x + dx, y + dy
 
-        # wall/out-of-bounds => stay (no extra penalty)
+        blocked = False
         if (not self.in_bounds(nx, ny)) or self.is_wall(nx, ny):
             nx, ny = x, y
+            blocked = True
 
         self.pos = (nx, ny)
         done = (self.pos == self.goal)
-        r = 1.0 if done else 0.0
-        return self.state_id(self.pos), float(r), bool(done)
+
+        if done:
+            r = self.goal_reward
+        else:
+            r = self.step_cost + (self.wall_penalty if blocked else 0.0)
+
+        return self.state_id(self.pos), float(r), done
 
 # ============================================================
 # 4) Action selection helpers
@@ -170,31 +174,20 @@ def epsilon_greedy_action(Q, s, eps, rng):
         return int(rng.integers(0, Q.shape[1]))
     return greedy_action(Q, s, rng)
 
+def softmax_stable(values, tau):
+    v = np.asarray(values, dtype=float)
+    z = tau * v
+    z = z - np.max(z)
+    e = np.exp(z)
+    return e / np.sum(e)
+
 # ============================================================
-# 4.5) Bandit selection (ONLY UCB here)
+# 4.5) Bandit selection (ONLY Boltzmann here)
 # ============================================================
-def bandit_select_arm_ucb(W, U, t, rng, c_ucb=1.0):
-    """
-    UCB1:
-      score_i = W_i + c * sqrt(log(t) / U_i)
-    - W: running mean reward (gain) per arm
-    - U: counts per arm
-    - t: total pulls so far (1-based)
-    """
+def bandit_select_arm_boltzmann(W, rng, tau=1.0):
     W = np.asarray(W, dtype=float)
-    U = np.asarray(U, dtype=float)
-    n_arms = W.shape[0]
-
-    untried = np.flatnonzero(U <= 0)
-    if untried.size > 0:
-        return int(rng.choice(untried))
-
-    tt = max(1, int(t))
-    bonus = float(c_ucb) * np.sqrt(np.log(tt) / U)
-    scores = W + bonus
-    mx = np.max(scores)
-    cand = np.flatnonzero(scores == mx)
-    return int(rng.choice(cand))
+    p = softmax_stable(W, tau)
+    return int(rng.choice(np.arange(W.shape[0]), p=p))
 
 # ============================================================
 # 5) One episode routines
@@ -272,32 +265,34 @@ def q_learning_baseline_curve(env,
         else:
             frac = 1.0 - (k / (K - 1))
             eps = eps_end + (eps_start - eps_end) * frac
+
         curve[k] = q_learning_episode_eps(env, Q, alpha, gamma, Hmax, eps, rng)
 
     return Q, curve
 
 # ============================================================
-# 7) PRQ-Learning (bandit = UCB ONLY)
+# 7) PRQ-Learning (bandit = Boltzmann ONLY)
 # ============================================================
-def prq_learning_ucb(env, library_Q,
-                     K=2000, Hmax=100,
-                     alpha=0.05, gamma=0.95,
-                     psi=1.0, nu=0.95,
-                     c_ucb=1.0,
-                     seed=0,
-                     record_curve=False):
+def prq_learning_boltzmann(env, library_Q,
+                           K=2000, Hmax=100,
+                           alpha=0.05, gamma=0.95,
+                           psi=1.0, nu=0.95,
+                           tau0=0.05, delta_tau=0.05,
+                           seed=0,
+                           record_curve=False):
     rng = np.random.default_rng(seed)
     n = len(library_Q)
 
     Q_new = np.zeros((env.n_states, env.n_actions), dtype=float)
-    W = np.zeros(n + 1, dtype=float)   # running avg gain per arm
-    U = np.zeros(n + 1, dtype=int)     # counts
+    W = np.zeros(n + 1, dtype=float)
+    U = np.zeros(n + 1, dtype=int)
 
+    tau = float(tau0)
     total_G = 0.0
     curve = np.zeros(K, dtype=float) if record_curve else None
 
     for k in range(K):
-        chosen = bandit_select_arm_ucb(W, U, t=(k + 1), rng=rng, c_ucb=float(c_ucb))
+        chosen = bandit_select_arm_boltzmann(W, rng, tau=tau)
 
         if chosen == 0:
             G = q_learning_episode_greedy(env, Q_new, alpha, gamma, Hmax, rng)
@@ -310,6 +305,7 @@ def prq_learning_ucb(env, library_Q,
         W[chosen] = (W[chosen] * U[chosen] + G) / (U[chosen] + 1)
         U[chosen] += 1
 
+        tau += float(delta_tau)
         total_G += G
         if record_curve:
             curve[k] = G
@@ -318,18 +314,19 @@ def prq_learning_ucb(env, library_Q,
     return Q_new, W, U, avg_gain_overall, curve
 
 # ============================================================
-# 8) PLPR (UCB bandit)
+# 8) PLPR (Boltzmann bandit)
 # ============================================================
-def plpr_run_ucb(tasks_goals,
-                 delta=0.25,
-                 K=2000, Hmax=100,
-                 alpha=0.05, gamma=0.95,
-                 psi=1.0, nu=0.95,
-                 c_ucb=1.0,
-                 env_seeds=None,          # length = num_tasks
-                 prq_seeds=None,          # length = num_tasks
-                 run_label="",
-                 record_task_indices_1based=(1, 5, 9, 12, 15)):
+def plpr_run_boltzmann(tasks_goals,
+                       delta=0.25,
+                       K=2000, Hmax=100,
+                       alpha=0.05, gamma=0.95,
+                       psi=1.0, nu=0.95,
+                       tau0=0.05,                # ★固定
+                       delta_tau=0.05,
+                       env_seeds=None,
+                       prq_seeds=None,
+                       run_label="",
+                       record_task_indices_1based=(1, 5, 9, 12, 15)):
     num_tasks = len(tasks_goals)
     if env_seeds is None or prq_seeds is None:
         raise ValueError("Please provide env_seeds and prq_seeds for fair grid search.")
@@ -350,12 +347,12 @@ def plpr_run_ucb(tasks_goals,
         env = MazeEnv(maze, goal=goal, gamma=gamma, seed=int(env_seeds[t]))
         record_this = (t in record_set0)
 
-        Q_new, W, U, avg_gain, curve = prq_learning_ucb(
+        Q_new, W, U, avg_gain, curve = prq_learning_boltzmann(
             env, library,
             K=K, Hmax=Hmax,
             alpha=alpha, gamma=gamma,
             psi=psi, nu=nu,
-            c_ucb=float(c_ucb),
+            tau0=float(tau0), delta_tau=float(delta_tau),
             seed=int(prq_seeds[t]),
             record_curve=record_this
         )
@@ -377,7 +374,7 @@ def plpr_run_ucb(tasks_goals,
         lib_sizes.append(len(library))
         added_flags.append(add)
 
-        print(f"{run_label} (c={c_ucb:.3f}) Task {t+1:02d}/{num_tasks} "
+        print(f"{run_label} (tau0={tau0:.3f}, dTau={delta_tau:.3f}) Task {t+1:02d}/{num_tasks} "
               f"|L|={len(library):02d} add={add} "
               f"WΩ={W_omega:.4f} Wmax={W_max:.4f} avgGain={avg_gain:.4f} goal={goal}")
 
@@ -451,7 +448,8 @@ def plot_compare_multi_paper_like(prq_curves_by_label, rl_curves, title, tick_ev
     plt.show()
 
 # ============================================================
-# 10) Main: UCB bandit ONLY + grid search
+# 10) Main: Boltzmann bandit ONLY + grid search on delta_tau ONLY
+#     ★ tau0 は 0.05 固定、delta_tau だけ探索
 # ============================================================
 def main():
     DELTA = 0.25
@@ -466,10 +464,12 @@ def main():
     psi = 1.0
     nu = 0.95
 
-    # ★Grid search over UCB exploration coefficient
-    C_UCB_LIST = [0.03, 0.1, 0.3, 1.0, 3.0, 10.0]
+    # ★ tau0 固定
+    TAU0_FIXED = 0.05
+    # ★ delta_tau だけグリッド
+    DELTA_TAU_LIST = [0.0, 0.005, 0.01, 0.02, 0.05]
 
-    # Baseline Q-learning exploration (action-side)
+    # Baseline Q-learning exploration
     eps_start = 1.0
     eps_end = 0.05
 
@@ -484,8 +484,8 @@ def main():
 
     print("\n==============================")
     print(f"Start δ={DELTA} (fixed), RUNS={RUNS}, record tasks={RECORD_TASKS}")
-    print("Reward design (paper-like): reach goal => +1, otherwise 0 (no step cost, no wall penalty)")
-    print(f"UCB grid: c in {C_UCB_LIST}")
+    print("Reward design: goal_reward=+1.0, step_cost=-0.01, wall_penalty=-0.05")
+    print(f"Boltzmann grid: tau0 fixed = {TAU0_FIXED}, delta_tau in {DELTA_TAU_LIST}")
     print("==============================")
 
     # ---- Precompute seeds per run to make grid-search fair ----
@@ -501,7 +501,7 @@ def main():
     def baseline_seed(r, t1):
         return 9999 + 100 * r + int(t1)
 
-    # ---- Collect baseline curves (shared across c grid) ----
+    # ---- Collect baseline curves (shared across delta_tau grid) ----
     rl_curves_all = {t: [] for t in RECORD_TASKS}
     for r in range(RUNS):
         for t1 in RECORD_TASKS:
@@ -516,18 +516,19 @@ def main():
             )
             rl_curves_all[t1].append(curve_rl)
 
-    # ---- Collect PRQ curves for each c ----
-    prq_curves_all = {c: {t: [] for t in RECORD_TASKS} for c in C_UCB_LIST}
+    # ---- Collect PRQ curves for each delta_tau ----
+    prq_curves_all = {dt: {t: [] for t in RECORD_TASKS} for dt in DELTA_TAU_LIST}
 
-    for c in C_UCB_LIST:
+    for dt in DELTA_TAU_LIST:
         for r in range(RUNS):
-            _, _, _, _, curves_dict, _goals_dict = plpr_run_ucb(
+            _, _, _, _, curves_dict, _goals_dict = plpr_run_boltzmann(
                 tasks_goals_fixed,
                 delta=DELTA,
                 K=K, Hmax=Hmax,
                 alpha=alpha, gamma=gamma,
                 psi=psi, nu=nu,
-                c_ucb=float(c),
+                tau0=float(TAU0_FIXED),
+                delta_tau=float(dt),
                 env_seeds=run_env_seeds[r],
                 prq_seeds=run_prq_seeds[r],
                 run_label=f"[run {r+1:02d}/{RUNS:02d}]",
@@ -535,19 +536,19 @@ def main():
             )
             for t1 in RECORD_TASKS:
                 if t1 in curves_dict and curves_dict[t1] is not None:
-                    prq_curves_all[c][t1].append(curves_dict[t1])
+                    prq_curves_all[dt][t1].append(curves_dict[t1])
 
-    # ---- Plot: all grid variants vs baseline (Taskごと) ----
+    # ---- Plot: all delta_tau variants vs baseline (Taskごと) ----
     for t1 in RECORD_TASKS:
         if len(rl_curves_all[t1]) == 0:
             print(f"[WARN] no baseline curves for Task {t1}")
             continue
 
         prq_curves_by_label = {}
-        for c in C_UCB_LIST:
-            curves = prq_curves_all[c][t1]
+        for dt in DELTA_TAU_LIST:
+            curves = prq_curves_all[dt][t1]
             if len(curves) > 0:
-                prq_curves_by_label[f"PRQ bandit=UCB (c={c})"] = curves
+                prq_curves_by_label[f"PRQ Boltz (tau0={TAU0_FIXED}, dTau={dt})"] = curves
 
         if len(prq_curves_by_label) == 0:
             print(f"[WARN] no PRQ curves collected for Task {t1}")
@@ -557,8 +558,8 @@ def main():
         plot_compare_multi_paper_like(
             prq_curves_by_label,
             rl_curves_all[t1],
-            title=f"PRQ(UCB grid) compare + Baseline - Task {t1}/{NUM_TASKS} "
-                  f"goal={goal} (δ={DELTA}, runs={RUNS})",
+            title=f"PRQ(Boltzmann dTau grid; tau0={TAU0_FIXED}) + Baseline - "
+                  f"Task {t1}/{NUM_TASKS} goal={goal} (δ={DELTA}, runs={RUNS})",
             tick_every=200
         )
 

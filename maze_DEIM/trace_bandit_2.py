@@ -2,6 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # ============================================================
+# 0) Reward parameters (NEW: shaped reward)
+# ============================================================
+GOAL_REWARD  = 1.0
+STEP_COST    = -0.01
+WALL_PENALTY = -0.05
+
+# ============================================================
 # 1) Maze (your maze)
 # ============================================================
 MAZE_STR = """
@@ -47,8 +54,8 @@ maze = parse_maze(MAZE_STR)
 H, W = maze.shape
 
 
-def free_cells(maze_):
-    ys, xs = np.where(maze_ == 0)
+def free_cells(maze):
+    ys, xs = np.where(maze == 0)
     return list(zip(xs.tolist(), ys.tolist()))  # (x,y)
 
 
@@ -75,26 +82,32 @@ TASK_GOALS = {
     14: (21, 1),
     15: (21, 5),
 }
+
 tasks_goals_fixed = [TASK_GOALS[i] for i in range(1, 16)]
 
+# sanity check（壁の上にゴール置いてないか）
 for i, g in enumerate(tasks_goals_fixed, start=1):
     if g not in FREE_SET:
         raise ValueError(f"Task {i} goal {g} is not a free cell!")
 
 # ============================================================
-# 3) Environment  ★報酬設計（罰則あり）：goal_reward + step_cost (+ wall_penalty)
+# 3) Environment  ★報酬設計：goal=+1, step=-0.01, wall=-0.05 (goal step overrides)
 # ============================================================
 class MazeEnv:
     """
-    Reward design (dense / penalty):
-      - Each step: step_cost (negative)
-      - If action hits wall/out-of-bounds (no movement): add wall_penalty (negative)
-      - If reach goal: reward = goal_reward (override step penalties for that step)
+    - Start: uniform random over free cells excluding goal
+    - Goal: single cell (x,y)
+    - Episode ends: reach goal OR max_steps Hmax
+    - Walls block motion (stay)
+
+    Reward design:
+      - If reach goal: r = GOAL_REWARD (override; no step_cost/wall_penalty on that step)
+      - Else: r = STEP_COST + (WALL_PENALTY if blocked else 0)
     """
-    def __init__(self, maze_, goal, gamma=0.95, seed=0,
-                 goal_reward=1.0, step_cost=-0.01, wall_penalty=-0.05):
-        self.maze = maze_
-        self.H, self.W = maze_.shape
+    def __init__(self, maze, goal, gamma=0.95, seed=0,
+                 goal_reward=GOAL_REWARD, step_cost=STEP_COST, wall_penalty=WALL_PENALTY):
+        self.maze = maze
+        self.H, self.W = maze.shape
         self.goal = tuple(goal)
         self.gamma = float(gamma)
         self.rng = np.random.default_rng(seed)
@@ -147,7 +160,7 @@ class MazeEnv:
 
         blocked = False
         if (not self.in_bounds(nx, ny)) or self.is_wall(nx, ny):
-            nx, ny = x, y
+            nx, ny = x, y  # blocked => stay
             blocked = True
 
         self.pos = (nx, ny)
@@ -169,26 +182,25 @@ def greedy_action(Q, s, rng):
     cand = np.flatnonzero(qs == mx)
     return int(rng.choice(cand))
 
-def epsilon_greedy_action(Q, s, eps, rng):
+def epsilon_greedy(Q, s, eps, rng):
     if rng.random() < eps:
         return int(rng.integers(0, Q.shape[1]))
     return greedy_action(Q, s, rng)
 
-def softmax_stable(values, inv_temp):
-    # inv_temp = "inverse temperature" style: p ∝ exp(inv_temp * value)
+def softmax_stable(values, tau):
     v = np.asarray(values, dtype=float)
-    z = inv_temp * v
+    z = tau * v
     z = z - np.max(z)
     e = np.exp(z)
     return e / np.sum(e)
 
 # ============================================================
-# 5) Bandit (policy-choice) selection: Boltzmann / ε-greedy / UCB
+# 4.5) Bandit (policy-choice) selection: Boltzmann / ε-greedy / UCB / Greedy
 # ============================================================
-def bandit_select_arm(W, rng, mode="boltzmann", inv_temp=0.0, eps_bandit=0.1,
+def bandit_select_arm(W, rng, mode="boltzmann", tau=0.0, eps_bandit=0.1,
                       U=None, t=None, c_ucb=1.0):
     """
-    Choose chosen ∈ {0..n}:
+    Choose policy index chosen ∈ {0..n} where:
       chosen==0 => use greedy on Q_new (omega)
       chosen>0  => reuse library_Q[chosen-1] with PRQ
     """
@@ -196,8 +208,13 @@ def bandit_select_arm(W, rng, mode="boltzmann", inv_temp=0.0, eps_bandit=0.1,
     n_arms = W.shape[0]
 
     if mode == "boltzmann":
-        p = softmax_stable(W, inv_temp)
+        p = softmax_stable(W, tau)
         return int(rng.choice(np.arange(n_arms), p=p))
+
+    if mode == "greedy":
+        mx = np.max(W)
+        cand = np.flatnonzero(W == mx)
+        return int(rng.choice(cand))
 
     if mode == "eps_greedy":
         if rng.random() < eps_bandit:
@@ -225,13 +242,13 @@ def bandit_select_arm(W, rng, mode="boltzmann", inv_temp=0.0, eps_bandit=0.1,
     raise ValueError(f"Unknown bandit mode: {mode}")
 
 # ============================================================
-# 6) One episode routines
+# 5) One episode routines
 # ============================================================
 def q_learning_episode_greedy(env, Q, alpha, gamma, max_steps, rng):
     s = env.reset()
     G = 0.0
     disc = 1.0
-    for _ in range(max_steps):
+    for _t in range(max_steps):
         a = greedy_action(Q, s, rng)
         ns, r, done = env.step(a)
         Q[s, a] += alpha * ((r + gamma * np.max(Q[ns])) - Q[s, a])
@@ -246,8 +263,8 @@ def q_learning_episode_eps(env, Q, alpha, gamma, max_steps, eps, rng):
     s = env.reset()
     G = 0.0
     disc = 1.0
-    for _ in range(max_steps):
-        a = epsilon_greedy_action(Q, s, eps, rng)
+    for _t in range(max_steps):
+        a = epsilon_greedy(Q, s, eps, rng)
         ns, r, done = env.step(a)
         Q[s, a] += alpha * ((r + gamma * np.max(Q[ns])) - Q[s, a])
         G += disc * r
@@ -264,13 +281,14 @@ def q_learning_episode_pi_reuse(env, Q_new, Q_past, alpha, gamma, max_steps,
     G = 0.0
     disc = 1.0
     for t in range(max_steps):
-        psi_h = float(np.clip(psi * (nu ** t), 0.0, 1.0))
+        psi_h = psi * (nu ** t)
+        psi_h = float(np.clip(psi_h, 0.0, 1.0))
 
         if rng.random() < psi_h:
-            a = greedy_action(Q_past, s, rng)          # follow past policy
+            a = greedy_action(Q_past, s, rng)
         else:
             eps = 1.0 - psi_h
-            a = epsilon_greedy_action(Q_new, s, eps, rng)
+            a = epsilon_greedy(Q_new, s, eps, rng)
 
         ns, r, done = env.step(a)
         Q_new[s, a] += alpha * ((r + gamma * np.max(Q_new[ns])) - Q_new[s, a])
@@ -283,7 +301,7 @@ def q_learning_episode_pi_reuse(env, Q_new, Q_past, alpha, gamma, max_steps,
     return G
 
 # ============================================================
-# 7) Baseline Q-learning runner (curve)
+# 6) Baseline Q-learning runner (curve)
 # ============================================================
 def q_learning_baseline_curve(env,
                               K=2000, Hmax=100,
@@ -301,18 +319,19 @@ def q_learning_baseline_curve(env,
             frac = 1.0 - (k / (K - 1))
             eps = eps_end + (eps_start - eps_end) * frac
 
-        curve[k] = q_learning_episode_eps(env, Q, alpha, gamma, Hmax, eps, rng)
+        G = q_learning_episode_eps(env, Q, alpha, gamma, Hmax, eps, rng)
+        curve[k] = G
 
     return Q, curve
 
 # ============================================================
-# 8) PRQ-Learning (policy-choice bandit)  + record raw G per episode
+# 7) PRQ-Learning + record G per episode (raw)
 # ============================================================
 def prq_learning(env, library_Q,
                  K=2000, Hmax=100,
                  alpha=0.05, gamma=0.95,
                  psi=1.0, nu=0.95,
-                 inv_temp0=0.0, delta_inv_temp=0.05,
+                 tau0=0.0, delta_tau=0.05,
                  seed=0,
                  record_curve=False,
                  bandit_mode="boltzmann",
@@ -322,10 +341,10 @@ def prq_learning(env, library_Q,
     n = len(library_Q)
 
     Q_new = np.zeros((env.n_states, env.n_actions), dtype=float)
-    W = np.zeros(n + 1, dtype=float)   # running avg gain per arm
-    U = np.zeros(n + 1, dtype=int)     # counts
+    W = np.zeros(n + 1, dtype=float)     # running avg gain per policy choice
+    U = np.zeros(n + 1, dtype=int)       # counts
 
-    inv_temp = float(inv_temp0)
+    tau = float(tau0)
     total_G = 0.0
     curve = np.zeros(K, dtype=float) if record_curve else None
 
@@ -333,7 +352,7 @@ def prq_learning(env, library_Q,
         chosen = bandit_select_arm(
             W, rng,
             mode=bandit_mode,
-            inv_temp=inv_temp,
+            tau=tau,
             eps_bandit=eps_bandit,
             U=U, t=(k + 1), c_ucb=c_ucb
         )
@@ -349,10 +368,7 @@ def prq_learning(env, library_Q,
         W[chosen] = (W[chosen] * U[chosen] + G) / (U[chosen] + 1)
         U[chosen] += 1
 
-        # Boltzmannのみ「温度(逆温度)を上げていく」挙動を再現
-        if bandit_mode == "boltzmann":
-            inv_temp += float(delta_inv_temp)
-
+        tau += float(delta_tau)  # keep behavior
         total_G += G
         if record_curve:
             curve[k] = G
@@ -361,29 +377,21 @@ def prq_learning(env, library_Q,
     return Q_new, W, U, avg_gain_overall, curve
 
 # ============================================================
-# 9) PLPR (library growth with delta)
-#    ★公平比較のため env_seeds/prq_seeds を外から渡せる
+# 8) PLPR
 # ============================================================
 def plpr_run(tasks_goals,
              delta=0.25,
              K=2000, Hmax=100,
              alpha=0.05, gamma=0.95,
              psi=1.0, nu=0.95,
-             inv_temp0=0.0, delta_inv_temp=0.05,
-             env_seeds=None,      # len=num_tasks
-             prq_seeds=None,      # len=num_tasks
+             tau0=0.0, delta_tau=0.05,
+             seed=0,
              run_label="",
              record_task_indices_1based=(3, 5, 11),
              bandit_mode="boltzmann",
              eps_bandit=0.1,
-             c_ucb=1.0,
-             # reward params
-             goal_reward=1.0, step_cost=-0.01, wall_penalty=-0.05):
-    num_tasks = len(tasks_goals)
-    if env_seeds is None or prq_seeds is None:
-        raise ValueError("Please provide env_seeds and prq_seeds for fair comparison.")
-    if len(env_seeds) != num_tasks or len(prq_seeds) != num_tasks:
-        raise ValueError("env_seeds/prq_seeds must have length = num_tasks.")
+             c_ucb=1.0):
+    rng = np.random.default_rng(seed)
 
     library = []
     gains = []
@@ -394,12 +402,16 @@ def plpr_run(tasks_goals,
     record_set0 = {i - 1 for i in record_task_indices_1based}
     curves_dict = {}
     goals_of_recorded = {}
+    env_seeds_recorded = {}
 
     for t, goal in enumerate(tasks_goals):
+        env_seed = int(rng.integers(0, 10**9))
+        # NEW: pass reward params
         env = MazeEnv(
-            maze, goal=goal, gamma=gamma, seed=int(env_seeds[t]),
-            goal_reward=goal_reward, step_cost=step_cost, wall_penalty=wall_penalty
+            maze, goal=goal, gamma=gamma, seed=env_seed,
+            goal_reward=GOAL_REWARD, step_cost=STEP_COST, wall_penalty=WALL_PENALTY
         )
+
         record_this = (t in record_set0)
 
         Q_new, W, U, avg_gain, curve = prq_learning(
@@ -407,8 +419,8 @@ def plpr_run(tasks_goals,
             K=K, Hmax=Hmax,
             alpha=alpha, gamma=gamma,
             psi=psi, nu=nu,
-            inv_temp0=inv_temp0, delta_inv_temp=delta_inv_temp,
-            seed=int(prq_seeds[t]),
+            tau0=tau0, delta_tau=delta_tau,
+            seed=int(rng.integers(0, 10**9)),
             record_curve=record_this,
             bandit_mode=bandit_mode,
             eps_bandit=eps_bandit,
@@ -419,6 +431,7 @@ def plpr_run(tasks_goals,
             idx1 = t + 1
             curves_dict[idx1] = curve
             goals_of_recorded[idx1] = goal
+            env_seeds_recorded[idx1] = env_seed  # baselineと揃えるため保存
 
         W_omega = float(W[0])
         W_max = float(np.max(W[1:])) if len(library) > 0 else float("-inf")
@@ -432,24 +445,24 @@ def plpr_run(tasks_goals,
         lib_sizes.append(len(library))
         added_flags.append(add)
 
-        print(f"{run_label} {bandit_mode:9s} Task {t+1:02d}/{num_tasks} "
+        print(f"{run_label}({bandit_mode}) Task {t+1:02d}/{len(tasks_goals)} "
               f"|L|={len(library):02d} add={add} "
               f"WΩ={W_omega:.4f} Wmax={W_max:.4f} avgGain={avg_gain:.4f} goal={goal}")
 
     return (np.array(gains), np.array(lib_sizes), np.array(added_flags),
-            core_goal_indices, curves_dict, goals_of_recorded)
+            core_goal_indices, curves_dict, goals_of_recorded, env_seeds_recorded)
 
 # ============================================================
-# 10) Visualization helpers
+# 9) Visualization
 # ============================================================
-def plot_goals_on_maze(maze_, goals, title="(a) goal points",
+def plot_goals_on_maze(maze, goals, title="(a) goal points",
                        grid=True, grid_color="0.7", grid_lw=0.6):
-    H_, W_ = maze_.shape
+    H, W = maze.shape
     fig, ax = plt.subplots(figsize=(7, 6))
 
-    img = np.zeros((H_, W_, 3), dtype=float)
-    img[maze_ == 0] = (1, 1, 1)
-    img[maze_ == 1] = (0, 0, 0)
+    img = np.zeros((H, W, 3), dtype=float)
+    img[maze == 0] = (1, 1, 1)
+    img[maze == 1] = (0, 0, 0)
 
     ax.imshow(img, interpolation="none")
     ax.set_title(title)
@@ -457,12 +470,12 @@ def plot_goals_on_maze(maze_, goals, title="(a) goal points",
     ax.set_yticks([])
 
     if grid:
-        ax.set_xticks(np.arange(-0.5, W_, 1), minor=True)
-        ax.set_yticks(np.arange(-0.5, H_, 1), minor=True)
+        ax.set_xticks(np.arange(-0.5, W, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, H, 1), minor=True)
         ax.grid(which="minor", color=grid_color, linewidth=grid_lw)
         ax.tick_params(which="minor", bottom=False, left=False)
-        ax.set_xlim(-0.5, W_ - 0.5)
-        ax.set_ylim(H_ - 0.5, -0.5)
+        ax.set_xlim(-0.5, W - 0.5)
+        ax.set_ylim(H - 0.5, -0.5)
 
     for i, (x, y) in enumerate(goals, start=1):
         ax.text(
@@ -478,24 +491,24 @@ def cumulative_mean(x):
     return np.cumsum(x) / np.arange(1, len(x) + 1)
 
 def plot_compare_multi_paper_like(prq_curves_by_label, rl_curves, title, tick_every=200):
-    plt.figure(figsize=(10, 4))
+    plt.figure(figsize=(9, 4))
 
-    fmts = ["o-", "^-", "d-", "v-", "x-", "+-", "*-", "s-", "p-"]
+    fmts = ["o-", "^-", "d-", "v-", "x-", "+-", "*-"]
     for i, (label, curves) in enumerate(prq_curves_by_label.items()):
         X = np.stack([cumulative_mean(c) for c in curves], axis=0)
         m, s = X.mean(axis=0), X.std(axis=0)
-        K_ = m.shape[0]
-        xs = np.arange(tick_every, K_ + 1, tick_every)
+        K = m.shape[0]
+        xs = np.arange(tick_every, K + 1, tick_every)
         idx = xs - 1
         fmt = fmts[i % len(fmts)]
         plt.errorbar(xs, m[idx], yerr=s[idx], fmt=fmt, capsize=3, label=label)
 
     Xr = np.stack([cumulative_mean(c) for c in rl_curves], axis=0)
     mr, sr = Xr.mean(axis=0), Xr.std(axis=0)
-    K_ = mr.shape[0]
-    xs = np.arange(tick_every, K_ + 1, tick_every)
+    K = mr.shape[0]
+    xs = np.arange(tick_every, K + 1, tick_every)
     idx = xs - 1
-    plt.errorbar(xs, mr[idx], yerr=sr[idx], fmt="h-", capsize=3,
+    plt.errorbar(xs, mr[idx], yerr=sr[idx], fmt="s-", capsize=3,
                  label="Baseline Q-learning (ε-greedy)")
 
     plt.title(title)
@@ -506,15 +519,17 @@ def plot_compare_multi_paper_like(prq_curves_by_label, rl_curves, title, tick_ev
     plt.show()
 
 # ============================================================
-# 11) Grid-search -> choose BEST per bandit -> compare curves
-#     ★罰則あり報酬設計での「最高性能比較」コード
+# 10) Main
+#   ★ BEST settings updated:
+#      - eps-bandit: epsb=0.2
+#      - Boltzmann: tau0=0.05, dTau=0.05  (legend name: "PRQ Boltz (tau0=0.05, dTau=0.05)")
+#      - UCB: c=0.1
+#   ★ Reward: goal=+1, step=-0.01, wall=-0.05
 # ============================================================
 def main():
-    # -----------------------------
-    # Core experimental settings
-    # -----------------------------
     DELTA = 0.25
     RUNS = 5
+
     K = 2000
     Hmax = 100
     gamma = 0.95
@@ -524,31 +539,21 @@ def main():
     psi = 1.0
     nu = 0.95
 
-    # Reward design (dense / penalty)
-    GOAL_REWARD = 1.0
-    STEP_COST = -0.01
-    WALL_PENALTY = -0.05
+    # ====== UPDATED "BEST" settings ======
+    TAU0_BEST = 0.05
+    DTAU_BEST = 0.05
 
-    # Baseline action-side exploration
+    EPS_BANDIT_BEST = 0.2
+
+    C_UCB_BEST = 0.1
+    # ====================================
+
+    # Baseline Q-learning exploration (action-side)
     eps_start = 1.0
     eps_end = 0.05
 
-    # Which tasks to plot curves for
-    RECORD_TASKS = (3, 5, 11)
-
-    NUM_TASKS = len(tasks_goals_fixed)
-
-    # -----------------------------
-    # Candidate grids (edit freely)
-    # -----------------------------
-    BOLTZ_GRID = [
-        (0.00, 0.05),
-        (0.05, 0.05),
-        (0.10, 0.05),
-        (0.05, 0.02),
-    ]
-    EPSB_GRID = [0.01, 0.05, 0.10, 0.20, 0.30]
-    C_UCB_GRID = [0.03, 0.10, 0.30, 1.0, 3.0, 10.0]
+    NUM_TASKS = len(tasks_goals_fixed)  # 15
+    RECORD_TASKS = (1, 5, 9, 12, 15)
 
     plot_goals_on_maze(
         maze, tasks_goals_fixed,
@@ -557,237 +562,112 @@ def main():
     )
 
     print("\n==============================")
-    print("Reward design (dense/penalty):")
-    print(f"  goal_reward={GOAL_REWARD}, step_cost={STEP_COST}, wall_penalty={WALL_PENALTY}")
-    print(f"δ={DELTA}, RUNS={RUNS}, K={K}, Hmax={Hmax}")
-    print("==============================\n")
+    print("Compare 4 curves: Boltzmann-best / ε-bandit-best / UCB-best / Baseline")
+    print(f"Reward: goal={GOAL_REWARD:+.3f}, step={STEP_COST:+.3f}, wall={WALL_PENALTY:+.3f}")
+    print(f"δ={DELTA}, RUNS={RUNS}, record tasks={RECORD_TASKS}")
+    print(f"Boltzmann best: tau0={TAU0_BEST}, dTau={DTAU_BEST}")
+    print(f"ε-bandit best : epsb={EPS_BANDIT_BEST}")
+    print(f"UCB best      : c={C_UCB_BEST}")
+    print("==============================")
 
-    # -----------------------------
-    # Precompute seeds for fairness
-    # -----------------------------
-    run_env_seeds = []
-    run_prq_seeds = []
-    for r in range(RUNS):
-        rng = np.random.default_rng(2000 + r)
-        env_seeds = rng.integers(0, 10**9, size=NUM_TASKS, dtype=np.int64)
-        prq_seeds = rng.integers(0, 10**9, size=NUM_TASKS, dtype=np.int64)
-        run_env_seeds.append(env_seeds)
-        run_prq_seeds.append(prq_seeds)
+    bandit_variants = [
+        ("boltzmann",  f"PRQ Boltz (tau0={TAU0_BEST}, dTau={DTAU_BEST})", None),
+        ("eps_greedy", f"PRQ bandit=ε-greedy (epsb={EPS_BANDIT_BEST})", None),
+        ("ucb",        f"PRQ bandit=UCB (c={C_UCB_BEST})", C_UCB_BEST),
+    ]
 
-    def baseline_seed(r, t1):
-        return 9999 + 100 * r + int(t1)
-
-    # =========================================================
-    # A) Grid search: pick BEST Boltzmann (inv_temp0, delta_inv_temp)
-    # =========================================================
-    boltz_scores = []
-    for inv0, dinv in BOLTZ_GRID:
-        per_run = []
-        for r in range(RUNS):
-            gains, *_ = plpr_run(
-                tasks_goals_fixed,
-                delta=DELTA,
-                K=K, Hmax=Hmax,
-                alpha=alpha, gamma=gamma,
-                psi=psi, nu=nu,
-                inv_temp0=inv0, delta_inv_temp=dinv,
-                env_seeds=run_env_seeds[r],
-                prq_seeds=run_prq_seeds[r],
-                run_label=f"[GRID][run {r+1:02d}/{RUNS:02d}]",
-                record_task_indices_1based=(),   # grid段階では曲線不要
-                bandit_mode="boltzmann",
-                eps_bandit=0.1,
-                c_ucb=1.0,
-                goal_reward=GOAL_REWARD, step_cost=STEP_COST, wall_penalty=WALL_PENALTY
-            )
-            per_run.append(float(np.mean(gains)))
-        score = float(np.mean(per_run))
-        boltz_scores.append((score, inv0, dinv))
-        print(f"[GRID] Boltzmann inv0={inv0:.3f}, dinv={dinv:.3f} => meanScore={score:.6f}")
-
-    boltz_scores.sort(key=lambda x: x[0], reverse=True)
-    BEST_BOLTZ_SCORE, BEST_INV0, BEST_DINV = boltz_scores[0]
-    print(f"\n[BEST] Boltzmann: inv0={BEST_INV0:.3f}, dinv={BEST_DINV:.3f}, score={BEST_BOLTZ_SCORE:.6f}\n")
-
-    # =========================================================
-    # B) Grid search: pick BEST ε-bandit (epsb)
-    # =========================================================
-    epsb_scores = []
-    for epsb in EPSB_GRID:
-        per_run = []
-        for r in range(RUNS):
-            gains, *_ = plpr_run(
-                tasks_goals_fixed,
-                delta=DELTA,
-                K=K, Hmax=Hmax,
-                alpha=alpha, gamma=gamma,
-                psi=psi, nu=nu,
-                inv_temp0=BEST_INV0, delta_inv_temp=BEST_DINV,  # 未使用だが引数は埋める
-                env_seeds=run_env_seeds[r],
-                prq_seeds=run_prq_seeds[r],
-                run_label=f"[GRID][run {r+1:02d}/{RUNS:02d}]",
-                record_task_indices_1based=(),
-                bandit_mode="eps_greedy",
-                eps_bandit=float(epsb),
-                c_ucb=1.0,
-                goal_reward=GOAL_REWARD, step_cost=STEP_COST, wall_penalty=WALL_PENALTY
-            )
-            per_run.append(float(np.mean(gains)))
-        score = float(np.mean(per_run))
-        epsb_scores.append((score, float(epsb)))
-        print(f"[GRID] ε-bandit epsb={epsb:.3f} => meanScore={score:.6f}")
-
-    epsb_scores.sort(key=lambda x: x[0], reverse=True)
-    BEST_EPSB_SCORE, BEST_EPSB = epsb_scores[0]
-    print(f"\n[BEST] ε-bandit: epsb={BEST_EPSB:.3f}, score={BEST_EPSB_SCORE:.6f}\n")
-
-    # =========================================================
-    # C) Grid search: pick BEST UCB (c)
-    # =========================================================
-    ucb_scores = []
-    for c in C_UCB_GRID:
-        per_run = []
-        for r in range(RUNS):
-            gains, *_ = plpr_run(
-                tasks_goals_fixed,
-                delta=DELTA,
-                K=K, Hmax=Hmax,
-                alpha=alpha, gamma=gamma,
-                psi=psi, nu=nu,
-                inv_temp0=BEST_INV0, delta_inv_temp=BEST_DINV,  # 未使用だが引数は埋める
-                env_seeds=run_env_seeds[r],
-                prq_seeds=run_prq_seeds[r],
-                run_label=f"[GRID][run {r+1:02d}/{RUNS:02d}]",
-                record_task_indices_1based=(),
-                bandit_mode="ucb",
-                eps_bandit=0.1,
-                c_ucb=float(c),
-                goal_reward=GOAL_REWARD, step_cost=STEP_COST, wall_penalty=WALL_PENALTY
-            )
-            per_run.append(float(np.mean(gains)))
-        score = float(np.mean(per_run))
-        ucb_scores.append((score, float(c)))
-        print(f"[GRID] UCB c={c:.3f} => meanScore={score:.6f}")
-
-    ucb_scores.sort(key=lambda x: x[0], reverse=True)
-    BEST_UCB_SCORE, BEST_C = ucb_scores[0]
-    print(f"\n[BEST] UCB: c={BEST_C:.3f}, score={BEST_UCB_SCORE:.6f}\n")
-
-    # =========================================================
-    # D) With BEST params: collect curves and compare
-    # =========================================================
-    print("\n==============================")
-    print("COMPARE with BEST params (dense/penalty reward):")
-    print(f"  Boltzmann: inv0={BEST_INV0}, dinv={BEST_DINV}")
-    print(f"  ε-bandit : epsb={BEST_EPSB}")
-    print(f"  UCB      : c={BEST_C}")
-    print("==============================\n")
-
-    # Baseline curves
+    prq_curves_all = {label: {t: [] for t in RECORD_TASKS} for _, label, _ in bandit_variants}
     rl_curves_all = {t: [] for t in RECORD_TASKS}
+
     for r in range(RUNS):
-        for t1 in RECORD_TASKS:
-            goal = tasks_goals_fixed[t1 - 1]
+        # baselineと揃える env_seed を取得（seed固定なので毎回同じ系列を取れる）
+        _, _, _, _, _, _, env_seeds_dict = plpr_run(
+            tasks_goals_fixed,
+            delta=DELTA,
+            K=K, Hmax=Hmax,
+            alpha=alpha, gamma=gamma,
+            psi=psi, nu=nu,
+            tau0=TAU0_BEST, delta_tau=DTAU_BEST,
+            seed=2000 + r,
+            run_label=f"[seed-only run {r+1:02d}/{RUNS:02d}]",
+            record_task_indices_1based=RECORD_TASKS,
+            bandit_mode="boltzmann",       # env_seed取得が目的
+            eps_bandit=EPS_BANDIT_BEST,
+            c_ucb=C_UCB_BEST
+        )
+
+        # PRQ（3方式）
+        for mode, label, c in bandit_variants:
+            if mode == "boltzmann":
+                tau0_use, dtau_use = TAU0_BEST, DTAU_BEST
+                epsb_use, c_use = EPS_BANDIT_BEST, C_UCB_BEST
+            elif mode == "eps_greedy":
+                tau0_use, dtau_use = TAU0_BEST, DTAU_BEST
+                epsb_use, c_use = EPS_BANDIT_BEST, C_UCB_BEST
+            elif mode == "ucb":
+                tau0_use, dtau_use = TAU0_BEST, DTAU_BEST
+                epsb_use, c_use = EPS_BANDIT_BEST, float(c)
+            else:
+                raise ValueError("Unexpected mode")
+
+            _, _, _, _, prq_curves_dict, _, _ = plpr_run(
+                tasks_goals_fixed,
+                delta=DELTA,
+                K=K, Hmax=Hmax,
+                alpha=alpha, gamma=gamma,
+                psi=psi, nu=nu,
+                tau0=tau0_use, delta_tau=dtau_use,
+                seed=2000 + r,
+                run_label=f"[run {r+1:02d}/{RUNS:02d}]",
+                record_task_indices_1based=RECORD_TASKS,
+                bandit_mode=mode,
+                eps_bandit=epsb_use,
+                c_ucb=c_use
+            )
+
+            for t in RECORD_TASKS:
+                if t in prq_curves_dict and prq_curves_dict[t] is not None:
+                    prq_curves_all[label][t].append(prq_curves_dict[t])
+
+        # Baseline（同じ env_seed で）
+        for t in RECORD_TASKS:
+            goal = tasks_goals_fixed[t - 1]
+            env_seed = env_seeds_dict[t]
             env = MazeEnv(
-                maze, goal=goal, gamma=gamma, seed=int(run_env_seeds[r][t1 - 1]),
+                maze, goal=goal, gamma=gamma, seed=env_seed,
                 goal_reward=GOAL_REWARD, step_cost=STEP_COST, wall_penalty=WALL_PENALTY
             )
+
             _, curve_rl = q_learning_baseline_curve(
                 env,
                 K=K, Hmax=Hmax,
                 alpha=alpha, gamma=gamma,
                 eps_start=eps_start, eps_end=eps_end,
-                seed=baseline_seed(r, t1)
+                seed=9999 + 100 * r + t
             )
-            rl_curves_all[t1].append(curve_rl)
+            rl_curves_all[t].append(curve_rl)
 
-    # PRQ curves (3 bandits)
-    prq_curves_all = {
-        "PRQ bandit=Boltzmann (best)": {t: [] for t in RECORD_TASKS},
-        "PRQ bandit=ε-greedy (best)":  {t: [] for t in RECORD_TASKS},
-        "PRQ bandit=UCB (best)":       {t: [] for t in RECORD_TASKS},
-    }
+    # Plot (Taskごと) 4曲線比較
+    for t in RECORD_TASKS:
+        if len(rl_curves_all[t]) == 0:
+            print(f"[WARN] no baseline curves for Task {t}")
+            continue
 
-    for r in range(RUNS):
-        # Boltzmann best
-        _, _, _, _, curves_dict, _ = plpr_run(
-            tasks_goals_fixed,
-            delta=DELTA,
-            K=K, Hmax=Hmax,
-            alpha=alpha, gamma=gamma,
-            psi=psi, nu=nu,
-            inv_temp0=BEST_INV0, delta_inv_temp=BEST_DINV,
-            env_seeds=run_env_seeds[r],
-            prq_seeds=run_prq_seeds[r],
-            run_label=f"[BEST][run {r+1:02d}/{RUNS:02d}]",
-            record_task_indices_1based=RECORD_TASKS,
-            bandit_mode="boltzmann",
-            eps_bandit=BEST_EPSB,
-            c_ucb=BEST_C,
-            goal_reward=GOAL_REWARD, step_cost=STEP_COST, wall_penalty=WALL_PENALTY
-        )
-        for t1 in RECORD_TASKS:
-            if t1 in curves_dict and curves_dict[t1] is not None:
-                prq_curves_all["PRQ bandit=Boltzmann (best)"][t1].append(curves_dict[t1])
+        prq_curves_by_label = {}
+        for _, label, _ in bandit_variants:
+            if len(prq_curves_all[label][t]) > 0:
+                prq_curves_by_label[label] = prq_curves_all[label][t]
 
-        # ε-bandit best
-        _, _, _, _, curves_dict, _ = plpr_run(
-            tasks_goals_fixed,
-            delta=DELTA,
-            K=K, Hmax=Hmax,
-            alpha=alpha, gamma=gamma,
-            psi=psi, nu=nu,
-            inv_temp0=BEST_INV0, delta_inv_temp=BEST_DINV,
-            env_seeds=run_env_seeds[r],
-            prq_seeds=run_prq_seeds[r],
-            run_label=f"[BEST][run {r+1:02d}/{RUNS:02d}]",
-            record_task_indices_1based=RECORD_TASKS,
-            bandit_mode="eps_greedy",
-            eps_bandit=BEST_EPSB,
-            c_ucb=BEST_C,
-            goal_reward=GOAL_REWARD, step_cost=STEP_COST, wall_penalty=WALL_PENALTY
-        )
-        for t1 in RECORD_TASKS:
-            if t1 in curves_dict and curves_dict[t1] is not None:
-                prq_curves_all["PRQ bandit=ε-greedy (best)"][t1].append(curves_dict[t1])
-
-        # UCB best
-        _, _, _, _, curves_dict, _ = plpr_run(
-            tasks_goals_fixed,
-            delta=DELTA,
-            K=K, Hmax=Hmax,
-            alpha=alpha, gamma=gamma,
-            psi=psi, nu=nu,
-            inv_temp0=BEST_INV0, delta_inv_temp=BEST_DINV,
-            env_seeds=run_env_seeds[r],
-            prq_seeds=run_prq_seeds[r],
-            run_label=f"[BEST][run {r+1:02d}/{RUNS:02d}]",
-            record_task_indices_1based=RECORD_TASKS,
-            bandit_mode="ucb",
-            eps_bandit=BEST_EPSB,
-            c_ucb=BEST_C,
-            goal_reward=GOAL_REWARD, step_cost=STEP_COST, wall_penalty=WALL_PENALTY
-        )
-        for t1 in RECORD_TASKS:
-            if t1 in curves_dict and curves_dict[t1] is not None:
-                prq_curves_all["PRQ bandit=UCB (best)"][t1].append(curves_dict[t1])
-
-    # Plot per task
-    for t1 in RECORD_TASKS:
-        prq_curves_by_label = {k: v[t1] for k, v in prq_curves_all.items() if len(v[t1]) > 0}
         if len(prq_curves_by_label) == 0:
-            print(f"[WARN] no PRQ curves for Task {t1}")
-            continue
-        if len(rl_curves_all[t1]) == 0:
-            print(f"[WARN] no baseline curves for Task {t1}")
+            print(f"[WARN] no PRQ curves collected for Task {t}")
             continue
 
-        goal = tasks_goals_fixed[t1 - 1]
+        goal = tasks_goals_fixed[t - 1]
         plot_compare_multi_paper_like(
             prq_curves_by_label,
-            rl_curves_all[t1],
-            title=(f"(dense/penalty) BEST bandits vs Baseline - Task {t1}/{NUM_TASKS} "
-                   f"goal={goal} (δ={DELTA}, runs={RUNS})"),
+            rl_curves_all[t],
+            title=f"PRQ(best-3 bandits) vs Baseline - Task {t}/{NUM_TASKS} goal={goal} "
+                  f"(δ={DELTA}, runs={RUNS})",
             tick_every=200
         )
 

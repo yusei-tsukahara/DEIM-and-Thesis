@@ -1,23 +1,23 @@
 {
   "latex-workshop.latex.tools": [
     {
-      "name": "latexmk (rc)",
+      "name": "latexmk (pLaTeX)",
       "command": "latexmk",
       "args": [
-        "-synctex=1",
-        "-interaction=nonstopmode",
-        "-file-line-error",
+        "-e",
+        "$latex='platex -synctex=1 -interaction=nonstopmode -file-line-error %O %S'",
+        "-e",
+        "$dvipdf='dvipdfmx %O -o %D %S'",
+        "-pdfdvi",
         "%DOC%"
       ]
     }
   ],
   "latex-workshop.latex.recipes": [
     {
-      "name": "latexmk (rc)",
-      "tools": [
-        "latexmk (rc)"
-      ]
+      "name": "latexmk (pLaTeX)",
+      "tools": ["latexmk (pLaTeX)"]
     }
   ],
-  "latex-workshop.latex.recipe.default": "latexmk (rc)"
+  "latex-workshop.latex.recipe.default": "latexmk (pLaTeX)"
 }

@@ -515,7 +515,7 @@ def main():
 
     # ====== BEST settings (from your latest conclusions) ======
     # Boltzmann best: tau0=0.05, dTau=0.05
-    TAU0_BEST = 0.05
+    TAU0_BEST = 0.0
     DTAU_BEST = 0.05
 
     # ε-bandit best (fixed): epsb=0.05
@@ -530,7 +530,7 @@ def main():
     eps_end = 0.05
 
     NUM_TASKS = len(tasks_goals_fixed)  # 15
-    RECORD_TASKS = (3, 5, 11)
+    RECORD_TASKS = (1, 5, 9, 12, 15)
 
     plot_goals_on_maze(
         maze, tasks_goals_fixed,
