@@ -181,34 +181,23 @@ def eps1_greedy_action_paper(Q, s, eps1_greedy_prob, rng):
         return greedy_action(Q, s, rng)
     return random_action(Q.shape[1], rng)
 
-# ============================================================
-# 4.5) Bandit selection (UCB)
-#   - Replace Boltzmann(softmax over W) with UCB1 over W
-# ============================================================
-def bandit_select_arm_ucb(W, U, t, rng, c=1.0):
+def softmax_stable(values, tau):
     """
-    UCB1 for selecting an arm (policy) based on running mean gain W and counts U.
+    Paper-style softmax uses exp(tau * W) (not exp(W/tau)).
+    """
+    v = np.asarray(values, dtype=float)
+    z = float(tau) * v
+    z = z - np.max(z)
+    e = np.exp(z)
+    return e / np.sum(e)
 
-    W: shape (n_arms,)  running mean gain per arm
-    U: shape (n_arms,)  counts per arm
-    t: current trial index (1-based recommended)
-    c: exploration coefficient (standard UCB1 uses sqrt(2*ln(t)/n); here we use c*sqrt(2*ln(t)/n))
-    """
+# ============================================================
+# 4.5) Bandit selection (Boltzmann / softmax)
+# ============================================================
+def bandit_select_arm_boltzmann(W, rng, tau=1.0):
     W = np.asarray(W, dtype=float)
-    U = np.asarray(U, dtype=int)
-
-    # If there are untried arms, pick one of them uniformly at random.
-    untried = np.flatnonzero(U == 0)
-    if untried.size > 0:
-        return int(rng.choice(untried))
-
-    # Standard UCB1 bonus
-    t = max(int(t), 1)
-    bonus = float(c) * np.sqrt(2.0 * np.log(float(t)) / U.astype(float))
-    scores = W + bonus
-    mx = np.max(scores)
-    cand = np.flatnonzero(scores == mx)
-    return int(rng.choice(cand))
+    p = softmax_stable(W, tau)
+    return int(rng.choice(np.arange(W.shape[0]), p=p))
 
 # ============================================================
 # 5) Paper Gain (Eq.(1) style)
@@ -346,8 +335,7 @@ def learn_first_task_without_reuse(env,
     return Q, W_omega, curve
 
 # ============================================================
-# 8) PRQ-Learning (bandit = UCB)
-#   - Only this part changed from Boltzmann to UCB.
+# 8) PRQ-Learning (bandit = Boltzmann)
 # ============================================================
 def prq_learning_boltzmann(env, library_Q,
                            K=2000, Hmax=100,
@@ -355,14 +343,7 @@ def prq_learning_boltzmann(env, library_Q,
                            psi=1.0, nu=0.95,
                            tau0=0.0, delta_tau=0.05,
                            seed=0,
-                           record_curve=False,
-                           ucb_c=1.0):
-    """
-    NOTE:
-      - Function name kept as-is to avoid changing the rest of the code.
-      - tau0 / delta_tau are kept in the signature but NOT used (UCB does not need tau).
-      - Bandit selection is now UCB1 over W.
-    """
+                           record_curve=False):
     rng = np.random.default_rng(seed)
     n = len(library_Q)
 
@@ -370,12 +351,13 @@ def prq_learning_boltzmann(env, library_Q,
     W = np.zeros(n + 1, dtype=float)   # running mean gain per arm
     U = np.zeros(n + 1, dtype=int)     # counts per arm
 
+    tau = float(tau0)
+
     total_g = 0.0
     curve = np.zeros(K, dtype=float) if record_curve else None
 
     for k in range(K):
-        # UCB selection (t is 1-based)
-        chosen = bandit_select_arm_ucb(W, U, t=k + 1, rng=rng, c=float(ucb_c))
+        chosen = bandit_select_arm_boltzmann(W, rng, tau=tau)
 
         if chosen == 0:
             g = q_learning_episode_greedy_paper_gain(env, Q_new, alpha, gamma, Hmax, rng)
@@ -393,11 +375,13 @@ def prq_learning_boltzmann(env, library_Q,
         if record_curve:
             curve[k] = g
 
+        tau += float(delta_tau)
+
     avg_gain_overall = total_g / float(K)
     return Q_new, W, U, avg_gain_overall, curve
 
 # ============================================================
-# 9) PLPR (UCB bandit)
+# 9) PLPR (Boltzmann bandit)
 #   - Add criterion: Wmax < δ * WΩ
 # ============================================================
 def plpr_run_boltzmann(tasks_goals,
@@ -413,8 +397,7 @@ def plpr_run_boltzmann(tasks_goals,
                        run_label="",
                        record_task_indices_1based=(1, 5, 9, 12, 15),
                        eps1_start=0.0,
-                       eps1_inc=0.0005,
-                       ucb_c=1.0):
+                       eps1_inc=0.0005):
     num_tasks = len(tasks_goals)
     if env_seeds is None or prq_seeds is None or scratch_seeds is None:
         raise ValueError("Please provide env_seeds, prq_seeds, scratch_seeds for fair runs.")
@@ -462,21 +445,20 @@ def plpr_run_boltzmann(tasks_goals,
             lib_sizes.append(len(library))
             added_flags.append(add)
 
-            print(f"{run_label} [FIRST:no reuse] (ucb_c={ucb_c:.3f}) "
+            print(f"{run_label} [FIRST:no reuse] (tau0={tau0:.3f}, dTau={delta_tau:.3f}) "
                   f"Task {t+1:02d}/{num_tasks} |L|={len(library):02d} add={add} "
                   f"WΩ={W_omega:.6f} Wmax={W_max} avgGain={avg_gain:.6f} goal={goal}")
             continue
 
-        # Subsequent tasks: PRQ-learning (UCB bandit)
+        # Subsequent tasks: PRQ-learning (Boltzmann bandit)
         Q_new, W, U, avg_gain, curve = prq_learning_boltzmann(
             env, library,
             K=K, Hmax=Hmax,
             alpha=alpha, gamma=gamma,
             psi=psi, nu=nu,
-            tau0=float(tau0), delta_tau=float(delta_tau),  # kept but unused
+            tau0=float(tau0), delta_tau=float(delta_tau),
             seed=int(prq_seeds[t]),
-            record_curve=record_this,
-            ucb_c=float(ucb_c)
+            record_curve=record_this
         )
 
         if record_this:
@@ -496,7 +478,7 @@ def plpr_run_boltzmann(tasks_goals,
         lib_sizes.append(len(library))
         added_flags.append(bool(add))
 
-        print(f"{run_label} (ucb_c={ucb_c:.3f}) "
+        print(f"{run_label} (tau0={tau0:.3f}, dTau={delta_tau:.3f}) "
               f"Task {t+1:02d}/{num_tasks} |L|={len(library):02d} add={add} "
               f"WΩ={W_omega:.6f} Wmax={W_max:.6f} avgGain={avg_gain:.6f} goal={goal}")
 
@@ -570,7 +552,7 @@ def plot_compare_multi_paper_like(prq_curves_by_label, rl_curves, title, tick_ev
     plt.show()
 
 # ============================================================
-# 11) Main: UCB bandit ONLY
+# 11) Main: Boltzmann bandit ONLY (paper setting: tau0=0, delta_tau=0.05)
 # ============================================================
 def main():
     DELTA = 0.25
@@ -584,12 +566,9 @@ def main():
     psi = 1.0
     nu = 0.95
 
-    # kept (unused in UCB) to avoid changing other parts
+    # ★論文どおり固定（グリッドサーチ無し）
     TAU0_FIXED = 0.0
     DELTA_TAU = 0.05
-
-    # UCB coefficient
-    UCB_C = 1.0
 
     # Paper-like baseline/first-task exploration schedule (ε1 = greedy prob)
     EPS1_START = 0.0
@@ -608,11 +587,11 @@ def main():
     print(f"Start δ={DELTA} (fixed), RUNS={RUNS}, record tasks={RECORD_TASKS}")
     print("Reward (sparse, unified): goal=+1 only, else 0 (no step cost / no wall penalty)")
     print("Evaluation/W update: paper gain Eq.(1) style (NO /H normalization; gamma^0 start)")
-    print("Bandit policy selection: UCB1 over W")
+    print("Bandit policy selection: Boltzmann/softmax over W")
     print("π-reuse (paper experiment): within-episode ε_h = 1 - ψ_h  (ε is greedy prob)")
     print(f"  psi={psi}, nu={nu}")
     print(f"Baseline/first-task (paper): ε1 starts {EPS1_START} and +{EPS1_INC}/episode")
-    print(f"UCB coefficient: c={UCB_C}")
+    print(f"Boltzmann (paper fixed): tau0={TAU0_FIXED}, delta_tau={DELTA_TAU}")
     print("==============================")
 
     # ---- Precompute seeds per run (fair) ----
@@ -647,7 +626,7 @@ def main():
             )
             rl_curves_all[t1].append(curve_rl)
 
-    # ---- Collect PRQ curves (UCB; single setting; no grid) ----
+    # ---- Collect PRQ curves (single setting; no grid) ----
     prq_curves_all = {t: [] for t in RECORD_TASKS}
 
     for r in range(RUNS):
@@ -657,16 +636,15 @@ def main():
             K=K, Hmax=Hmax,
             alpha=alpha, gamma=gamma,
             psi=psi, nu=nu,
-            tau0=float(TAU0_FIXED),         # kept (unused)
-            delta_tau=float(DELTA_TAU),     # kept (unused)
+            tau0=float(TAU0_FIXED),
+            delta_tau=float(DELTA_TAU),
             env_seeds=run_env_seeds[r],
             prq_seeds=run_prq_seeds[r],
             scratch_seeds=run_scratch_seeds[r],
             run_label=f"[run {r+1:02d}/{RUNS:02d}]",
             record_task_indices_1based=RECORD_TASKS,
             eps1_start=EPS1_START,
-            eps1_inc=EPS1_INC,
-            ucb_c=UCB_C
+            eps1_inc=EPS1_INC
         )
 
         for t1 in RECORD_TASKS:
@@ -681,13 +659,13 @@ def main():
 
         goal = tasks_goals_fixed[t1 - 1]
         prq_curves_by_label = {
-            f"PLPR+PRQ bandit=UCB (c={UCB_C})": prq_curves_all[t1]
+            f"PLPR+PRQ bandit=Boltz (tau0={TAU0_FIXED}, dTau={DELTA_TAU})": prq_curves_all[t1]
         }
 
         plot_compare_multi_paper_like(
             prq_curves_by_label,
             rl_curves_all[t1],
-            title=f"PLPR+PRQ(UCB; c={UCB_C}) vs Baseline - "
+            title=f"PLPR+PRQ(Boltz; paper fixed) vs Baseline - "
                   f"Task {t1}/{NUM_TASKS} goal={goal} (δ={DELTA}, runs={RUNS})",
             tick_every=200
         )

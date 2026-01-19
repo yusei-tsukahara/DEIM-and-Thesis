@@ -502,7 +502,7 @@ def plot_compare_multi_paper_like(prq_curves_by_label, rl_curves, title, tick_ev
 # ============================================================
 def main():
     DELTA = 0.25
-    RUNS = 5
+    RUNS = 1
 
     K = 2000
     Hmax = 100
